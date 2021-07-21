@@ -1,9 +1,14 @@
+not_for_git/
+tests/
+database/mimic3.db
+
 # History files
 .Rhistory
 .Rapp.history
 
 # Session Data files
 .RData
+.DS_Store
 
 # User-specific files
 .Ruserdata
@@ -19,6 +24,7 @@
 
 # RStudio files
 .Rproj.user/
+*.Rproj
 
 # produced vignettes
 vignettes/*.html
