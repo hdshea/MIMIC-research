@@ -1,0 +1,234 @@
+---
+title: 'MIMIC-III Population Statistics'
+author: "H. David Shea"
+date: "`r format(Sys.time(), '%d %b %Y')`"
+output:
+    html_document:
+        theme: spacelab
+        code_folding: hide
+        keep_md: true
+---
+    
+```{r setup, include = FALSE}
+library(DBI)
+library(RSQLite)
+library(tidyverse)
+library(patchwork)
+    
+knitr::opts_chunk$set(
+    connection = "mimic3", # automatically uses this connection in sql chunks 
+    comment = "#>", 
+    collapse = TRUE, 
+    message = FALSE,
+    fig.width = 8,
+    fig.asp = ((1 + sqrt(5)) / 2) - 1, # the golden ratio - technically, the b proportion of a+b when a is 1
+    out.width = "70%",
+    fig.align = "center"
+)
+```
+
+# {.tabset .tabset-fade}
+
+## Data sets
+
+This work references data on from the Medical Information Mart for Intensive Care MIMIC-III database v1.4.  MIMIC-III is a large, freely-available database comprising de-identified health-related data from patients who were admitted to the critical care units of the Beth Israel Deaconess Medical Center from 2001-2019.  Detailed information can be obtained on the [MIMIC-III website](https://mimic.mit.edu/docs/iii/).
+
+I have in *mimic_base_dir*/database/mimic3.db the SQLite version of the full MIMIC-III v1.4 database loaded.  I'll use that in the processing below. The following code chunk attaches the database and loads auxiliary functions (available in *mimic_base_dir*/mimic_concepts).
+
+```{r source_aux_functions, include=TRUE}
+base_dir <- here::here("")
+db_file <- fs::path(base_dir, "database/mimic3.db")
+if(dbCanConnect(RSQLite::SQLite(), db_file)) {
+    mimic3 <- dbConnect(RSQLite::SQLite(), db_file)
+} else {
+    stop(str_c("Database file: ", db_file, " not found.", sep=""))
+}
+
+source(fs::path(base_dir, "mimic_concepts/mimic_concepts.R"))
+```
+
+The primary dataset used in the analysis is the full adult population (age >= 16) from the MIMIC-III database. This data set includes patient demographics data, data about each admission for the patient, and data about any ICU stays while the patient was admitted to the hospital.
+
+```{r pat_icu_data, include=TRUE}
+pat_icu <- mimic_get_patient_icustays(mimic3) %>% 
+    filter(ADMISSION_AGE >= 16)
+
+```
+
+```{r pat_icu_calc, include=FALSE}
+pat_icu_cohort <- pat_icu %>% 
+    select(SUBJECT_ID) %>% 
+    group_by(SUBJECT_ID) %>% 
+    count() %>% 
+    pull(SUBJECT_ID)
+
+n_icustays <- pat_icu %>% 
+    group_by(SUBJECT_ID, HADM_ID) %>%
+    count()
+
+n_admissions <- n_icustays %>% 
+    group_by(SUBJECT_ID) %>% 
+    count()
+
+avg_hosp_stay <- pat_icu %>% 
+    select(SUBJECT_ID, HADM_ID, LOS_HOSPITAL) %>% 
+    filter(!is.na(LOS_HOSPITAL)) %>% 
+    group_by(SUBJECT_ID, HADM_ID, LOS_HOSPITAL) %>% 
+    count() %>% 
+    pull(LOS_HOSPITAL) %>% 
+    mean()
+
+avg_icu_stay <- mean(pat_icu$LOS_ICUSTAY, na.rm = TRUE)
+
+by_gender <- pat_icu %>% 
+    filter(FIRST_ADMISSION) %>% 
+    select(SUBJECT_ID, GENDER) %>% 
+    group_by(GENDER) %>% 
+    count()
+```
+
+The `pat_icu` dataset contains information on `r format(length(pat_icu_cohort), big.mark=",")` patients (`r format(by_gender %>% filter(GENDER == 'M') %>% pull(n), big.mark=",")` men and `r format(by_gender %>% filter(GENDER == 'F') %>% pull(n), big.mark=",")` women), `r  format(length(unique(pat_icu$HADM_ID)), big.mark=",")` individual hospital admissions, and `r format(length(unique(pat_icu$ICUSTAY_ID)), big.mark=",")` individual ICU stays.
+
+Individual patients were admitted to the hospital between `r min(n_admissions$n)` and `r max(n_admissions$n)` times with the average number of admission being `r round(mean(n_admissions$n), 1)`.  The average length of hospital stays was `r round(avg_hosp_stay, 1)` days.
+
+Per admission, patients were admitted to intensive care between `r min(n_icustays$n)` and `r max(n_icustays$n)` times with the average number of ICU stays per admission being `r round(mean(n_icustays$n), 1)`.  The average length of an ICU stay was `r round(avg_icu_stay, 1)` days.
+
+## Basic Patient Demographics {.tabset .tabset-fade .tabset-pills}
+
+### Age
+
+```{r pat_age, include=FALSE}
+age <- pat_icu %>%
+    select(SUBJECT_ID, HADM_ID, GENDER, ADMISSION_AGE) %>% 
+    group_by(SUBJECT_ID, HADM_ID, GENDER, ADMISSION_AGE) %>% 
+    count()
+```
+
+The average age of patients at the time of admission was `r round(mean(age$ADMISSION_AGE), 2)` - for men the average was `r round(mean(age$ADMISSION_AGE[age$GENDER == 'M']), 2)` and for women the average was `r round(mean(age$ADMISSION_AGE[age$GENDER == 'F']), 2)`.
+
+Note:  Patients who are older than 89 years old at any time in the database have had their date of birth
+shifted to obscure their age and comply with HIPAA.  These ages appear in the data as >= 300.  They do, however, show up in the correct `>= 90` decade bucket in the charts following.
+
+```{r pat_age_plot, include=TRUE, out.width = "100%"}
+age_all <- pat_icu %>%
+    filter(FIRST_ICUSTAY) %>% 
+    select(SUBJECT_ID, HADM_ID, GENDER, ADMISSION_DECADE) %>% 
+    ggplot(aes(x = ADMISSION_DECADE)) +
+    geom_bar(
+        fill = "#FF9999",
+        color = "white",
+        na.rm = TRUE) +
+    labs(
+        x = "Age Group", 
+        y = NULL)
+
+age_m <- pat_icu %>%
+    filter(FIRST_ICUSTAY, GENDER == 'M') %>% 
+    select(SUBJECT_ID, HADM_ID, GENDER, ADMISSION_DECADE) %>% 
+    ggplot(aes(x = ADMISSION_DECADE)) +
+    geom_bar(
+        fill = "#FF9999",
+        color = "white",
+        na.rm = TRUE) +
+    labs(
+        title = "Men",
+        x = "Age Group", 
+        y = NULL) +
+    theme(axis.text = element_text(size = 7))
+
+age_f <- pat_icu %>%
+    filter(FIRST_ICUSTAY, GENDER == 'F') %>% 
+    select(SUBJECT_ID, HADM_ID, GENDER, ADMISSION_DECADE) %>% 
+    ggplot(aes(x = ADMISSION_DECADE)) +
+    geom_bar(
+        fill = "#FF9999",
+        color = "white",
+        na.rm = TRUE) +
+    labs(
+        title = "Women",
+        x = "Age Group", 
+        y = NULL) +
+    theme(axis.text = element_text(size = 7))
+
+age_all / ((age_m + age_f) + plot_layout(ncol = 2)) + 
+    plot_annotation(
+        title = "Population Age at Admission to Hospital",
+        subtitle = "By Decade",
+        caption = "Source: MIMIIC-III v1.4"
+    )
+```
+
+### Admission Characteristics
+
+```{r adm_char_data, include=FALSE}
+adm_type_n <- pat_icu %>% 
+    filter(FIRST_ICUSTAY) %>% 
+    group_by(ADMISSION_TYPE) %>% 
+    count() %>% 
+    arrange(desc(n))
+
+adm_loc_n <- pat_icu %>% 
+    filter(FIRST_ICUSTAY) %>% 
+    group_by(ADMISSION_LOCATION) %>% 
+    count() %>% 
+    arrange(desc(n))
+
+dis_loc_n <- pat_icu %>% 
+    filter(FIRST_ICUSTAY) %>% 
+    group_by(DISCHARGE_LOCATION) %>% 
+    count() %>% 
+    arrange(desc(n))
+```
+
+`r str_to_title(as.character(adm_type_n$ADMISSION_TYPE)[1])` admissions accounted for the largest number (`r format(as.numeric(adm_type_n[1,2]), big.mark=",")`) and highest percentage (`r round(100*(as.numeric(adm_type_n[1,2]/sum(adm_type_n[,2]))), 1)`) of admissions.
+
+
+```{r adm_char_plot, include=TRUE}
+pat_icu %>% 
+    filter(FIRST_ICUSTAY) %>% 
+    ggplot(aes(x = ADMISSION_TYPE)) +
+    geom_bar(
+        fill = "#FF9999",
+        color = "white",
+        na.rm = TRUE) +
+    labs(
+        title = "Reason for Admission to Hospital",
+        caption = "Source: MIMIIC-III v1.4",
+        y = NULL,
+        x = "Type of Admission") +
+    scale_x_discrete(limits=rev)
+
+pat_icu %>% 
+    filter(FIRST_ICUSTAY) %>% 
+    ggplot(aes(x = ADMISSION_LOCATION)) +
+    geom_bar(
+        fill = "#FF9999",
+        color = "white",
+        na.rm = TRUE) +
+    labs(
+        title = "Reason for Admission to Hospital",
+        caption = "Source: MIMIIC-III v1.4",
+        y = NULL,
+        x = "Type of Admission") +
+    scale_x_discrete(limits=rev)
+
+pat_icu %>% 
+    filter(FIRST_ICUSTAY) %>% 
+    ggplot(aes(x = DISCHARGE_LOCATION)) +
+    geom_bar(
+        fill = "#FF9999",
+        color = "white",
+        na.rm = TRUE) +
+    labs(
+        title = "Reason for Admission to Hospital",
+        caption = "Source: MIMIIC-III v1.4",
+        y = NULL,
+        x = "Type of Admission") +
+    scale_x_discrete(limits=rev)
+```
+
+
+
+```{r end, include=FALSE}
+dbDisconnect(mimic3)
+```

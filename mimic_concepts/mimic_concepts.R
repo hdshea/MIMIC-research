@@ -10,6 +10,7 @@ library(DBI)
 library(RSQLite)
 library(tidyverse)
 library(lubridate)
+library(Hmisc)
 #+
 
 #+ r db_con, include = FALSE
@@ -53,6 +54,30 @@ cohort_where <- function(cohort) {
             length(cohort) == 1,
             str_c("WHERE SUBJECT_ID = ", cohort),
             str_c("WHERE SUBJECT_ID IN (", str_c(cohort, collapse = ", "), ")")
+        )
+    }
+
+    rval
+}
+#+
+
+#'
+#' In the following functions, the concept of an item list is a group of event items identified by numeric ITEMIDs.
+#'
+#' A item list can be:
+#'
+#' * NULL, indicating the every item
+#' * a single ITEMID for an individual ITEMID, or
+#' * a list of ITEMIDs for a proper subset of the eveny items.
+#'
+#+ r itemlist_where
+itemlist_where <- function(itemlist) {
+    rval <- NULL
+    if(!is.null(itemlist)) {
+        rval <- ifelse(
+            length(itemlist) == 1,
+            str_c("WHERE ITEMID = ", itemlist),
+            str_c("WHERE ITEMID IN (", str_c(itemlist, collapse = ", "), ")")
         )
     }
 
@@ -143,8 +168,13 @@ mimic_get_transfers <- function(con, cohort = NULL, ...) {
 #'
 #' (FKEY `SUBJECT_ID`, `HADM_ID`, `ICUSTAY_ID`, `ITEMID`, `CGID`)
 #'
-mimic_get_chartevents <- function(con, cohort = NULL, ...) {
-    where <- cohort_where(cohort)
+mimic_get_chartevents <- function(con, cohort = NULL, itemlist = NULL, ...) {
+    cwhere <- cohort_where(cohort)
+    iwhere <- itemlist_where(itemlist)
+    if (!is.null(cwhere) && !is.null(iwhere)) {
+        iwhere <- str_replace(iwhere, '^WHERE', ' AND')
+    }
+    where <- str_c(cwhere, iwhere)
 
     db_get_chartevents(con, where) %>%
         arrange(SUBJECT_ID, CHARTTIME, HADM_ID, ICUSTAY_ID, ITEMID)
@@ -259,8 +289,13 @@ mimic_get_drgcodes <- function(con, cohort = NULL, ...) {
 
 #' Laboratory measurements for patients both within the hospital and in out patient clinics
 #'
-mimic_get_labevents <- function(con, cohort = NULL, ...) {
-    where <- cohort_where(cohort)
+mimic_get_labevents <- function(con, cohort = NULL, itemlist = NULL, ...) {
+    cwhere <- cohort_where(cohort)
+    iwhere <- itemlist_where(itemlist)
+    if(!is.null(cwhere) && !is.null(iwhere)) {
+        iwhere <- str_replace(iwhere, '^WHERE', ' AND')
+    }
+    where <- str_c(cwhere, iwhere)
 
     db_get_labevents(con, where) %>%
         arrange(SUBJECT_ID, CHARTTIME, HADM_ID, ITEMID)
@@ -401,6 +436,86 @@ mimic_get_procedureevents_mv_items <- function(con) {
 #'
 mimic_get_lab_items <- function(con) {db_get_d_labitems(con) %>% arrange(ITEMID)}
 #+
+
+#' ### Common Pattern Functions
+#'
+#' These functions return data frames representing common patterns of data access for research.
+#'
+
+#' Combined patient and admissions data.  The function calculates as part of the data frame
+#' length of stay in the hospital in days (`LOS_HOSPITAL`) and age at admission in years (`ADMISSION_AGE`).
+#' Patients who are older than 89 years old at any time in the database have had their date of birth
+#' shifted to obscure their age and comply with HIPAA.  These ages appear in the data as >= 300.
+#' As such, an additional field is added to categorize age into decades (`ADMISSION_DECADE`).
+#' Patients older than 89 show up in the 90 and older age decade bucket.
+#'
+#' This is patterned off the `icustay_detail` SQL in the mimic-code github repository referenced above.
+#'
+mimic_get_patient_admissions <- function(con, cohort = NULL, ...) {
+    mimic_get_admissions(con, cohort) %>%
+        left_join(mimic_get_patients(con, cohort), by = "SUBJECT_ID") %>%
+        mutate(
+            LOS_HOSPITAL = time_length(difftime(DISCHTIME, ADMITTIME), "days"),
+            ADMISSION_AGE = time_length(difftime(ADMITTIME, DOB), "years"),
+            ADMISSION_DECADE = cut2(ADMISSION_AGE,c(0,10,20,30,40,50,60,70,80,90)),
+            ETHNICITY_GROUP =
+                case_when(
+                    str_starts(ETHNICITY, 'WHITE') ~ 'WHITE',
+                    str_starts(ETHNICITY, 'BLACK') ~ 'BLACK',
+                    str_starts(ETHNICITY, 'CARIBBEAN') ~ 'BLACK',
+                    str_starts(ETHNICITY, 'HISPANIC') ~ 'HISPANIC',
+                    str_starts(ETHNICITY, 'ASIAN') ~ 'ASIAN',
+                    str_starts(ETHNICITY, 'AMERICAN INDIAN') ~ 'NATIVE',
+                    str_starts(ETHNICITY, 'UNKNOWN') ~ 'UNKNOWN',
+                    str_starts(ETHNICITY, 'UNABLE') ~ 'UNKNOWN',
+                    str_starts(ETHNICITY, 'PATIENT') ~ 'UNKNOWN',
+                    TRUE ~ 'OTHER'
+                ),
+            ETHNICITY_GROUP = as.factor(ETHNICITY_GROUP),
+            ADMISSION_TYPE = as.factor(ADMISSION_TYPE),
+            ADMISSION_LOCATION = as.factor(ADMISSION_LOCATION),
+            DISCHARGE_LOCATION = as.factor(DISCHARGE_LOCATION),
+            INSURANCE = as.factor(INSURANCE)
+            ) %>%
+        arrange(SUBJECT_ID, ADMITTIME) %>%
+        group_by(SUBJECT_ID) %>%
+        mutate(
+            ADMISSION_SEQ = row_number(),
+            FIRST_ADMISSION = (ADMISSION_SEQ == 1)
+        ) %>%
+        ungroup() %>%
+        select(SUBJECT_ID, HADM_ID,
+               GENDER, DOD,
+               ADMISSION_SEQ, FIRST_ADMISSION, ADMITTIME, DISCHTIME, LOS_HOSPITAL,
+               ADMISSION_AGE, ADMISSION_DECADE,
+               ADMISSION_TYPE, ADMISSION_LOCATION, DISCHARGE_LOCATION,
+               INSURANCE, ETHNICITY_GROUP, HAS_CHARTEVENTS_DATA)
+}
+
+#' Combined patient, admission and icu stay data.  This includes all of the information from the
+#' `mimic_get_patient_admissions` function plus addition data on icu stays while in the hospital.
+#'
+#' This is patterned off the `icustay_detail` SQL in the mimic-code github repository referenced above.
+#'
+mimic_get_patient_icustays <- function(con, cohort = NULL, ...) {
+    mimic_get_icustays(con, cohort) %>%
+        left_join(mimic_get_patient_admissions(con, cohort), by = c("SUBJECT_ID", "HADM_ID")) %>%
+        arrange(SUBJECT_ID, INTIME) %>%
+        group_by(SUBJECT_ID, HADM_ID) %>%
+        mutate(
+            ICUSTAY_SEQ = row_number(),
+            FIRST_ICUSTAY = (ICUSTAY_SEQ == 1),
+            LOS_ICUSTAY = LOS
+        ) %>%
+        ungroup() %>%
+        select(SUBJECT_ID, HADM_ID, ICUSTAY_ID,
+               GENDER, DOD,
+               ADMISSION_SEQ, FIRST_ADMISSION, ADMITTIME, DISCHTIME, LOS_HOSPITAL,
+               ADMISSION_AGE, ADMISSION_DECADE,
+               ADMISSION_TYPE, ADMISSION_LOCATION, DISCHARGE_LOCATION,
+               INSURANCE, ETHNICITY_GROUP, HAS_CHARTEVENTS_DATA,
+               ICUSTAY_SEQ, FIRST_ICUSTAY, INTIME, OUTTIME, LOS_ICUSTAY)
+}
 
 #+ r db_discon, include = FALSE
 # Disconnect from the MIMIC3 database - for testing code only
