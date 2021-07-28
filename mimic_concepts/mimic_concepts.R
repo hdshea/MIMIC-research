@@ -143,7 +143,13 @@ mimic_get_services <- function(con, cohort = NULL, ...) {
     where <- cohort_where(cohort)
 
     db_get_services(con, where) %>%
-        arrange(SUBJECT_ID, TRANSFERTIME, HADM_ID)
+        arrange(SUBJECT_ID, TRANSFERTIME, HADM_ID) %>%
+        group_by(SUBJECT_ID, HADM_ID) %>%
+        mutate(
+            SERVICE_SEQ = row_number(),
+            FIRST_SERVICE = (SERVICE_SEQ == 1)
+        ) %>%
+        ungroup()
 }
 
 #' Patient movement from bed to bed within the hospital, including ICU admission and discharge

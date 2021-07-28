@@ -14,6 +14,7 @@ library(DBI)
 library(RSQLite)
 library(tidyverse)
 library(patchwork)
+#library(tidyquant)
     
 knitr::opts_chunk$set(
     connection = "mimic3", # automatically uses this connection in sql chunks 
@@ -31,9 +32,14 @@ knitr::opts_chunk$set(
 
 ## Data sets
 
-This work references data on from the Medical Information Mart for Intensive Care MIMIC-III database v1.4.  MIMIC-III is a large, freely-available database comprising de-identified health-related data from patients who were admitted to the critical care units of the Beth Israel Deaconess Medical Center from 2001-2019.  Detailed information can be obtained on the [MIMIC-III website](https://mimic.mit.edu/docs/iii/).
+This work references data on from the Medical Information Mart for Intensive Care MIMIC-III database v1.4. 
+MIMIC-III is a large, freely-available database comprising de-identified health-related data from patients who
+were admitted to the critical care units of the Beth Israel Deaconess Medical Center from 2001-2019.  Detailed
+information can be obtained on the [MIMIC-III website](https://mimic.mit.edu/docs/iii/).
 
-I have in *mimic_base_dir*/database/mimic3.db the SQLite version of the full MIMIC-III v1.4 database loaded.  I'll use that in the processing below. The following code chunk attaches the database and loads auxiliary functions (available in *mimic_base_dir*/mimic_concepts).
+I have in *mimic_base_dir*/database/mimic3.db the SQLite version of the full MIMIC-III v1.4 database loaded. 
+I'll use that in the processing below. The following code chunk attaches the database and loads auxiliary
+functions (available in *mimic_base_dir*/mimic_concepts).
 
 ```{r source_aux_functions, include=TRUE}
 base_dir <- here::here("")
@@ -47,7 +53,9 @@ if(dbCanConnect(RSQLite::SQLite(), db_file)) {
 source(fs::path(base_dir, "mimic_concepts/mimic_concepts.R"))
 ```
 
-The primary dataset used in the analysis is the full adult population (age >= 16) from the MIMIC-III database. This data set includes patient demographics data, data about each admission for the patient, and data about any ICU stays while the patient was admitted to the hospital.
+The primary dataset used in the analysis is the full adult population (age >= 16) from the MIMIC-III database.
+This data set includes patient demographics data, data about each admission for the patient, and data about any
+ICU stays while the patient was admitted to the hospital.
 
 ```{r pat_icu_data, include=TRUE}
 pat_icu <- mimic_get_patient_icustays(mimic3) %>% 
@@ -71,12 +79,9 @@ n_admissions <- n_icustays %>%
     count()
 
 avg_hosp_stay <- pat_icu %>% 
-    select(SUBJECT_ID, HADM_ID, LOS_HOSPITAL) %>% 
-    filter(!is.na(LOS_HOSPITAL)) %>% 
-    group_by(SUBJECT_ID, HADM_ID, LOS_HOSPITAL) %>% 
-    count() %>% 
+    filter(FIRST_ICUSTAY, !is.na(LOS_HOSPITAL)) %>% 
     pull(LOS_HOSPITAL) %>% 
-    mean()
+    mean(na.rm = TRUE)
 
 avg_icu_stay <- mean(pat_icu$LOS_ICUSTAY, na.rm = TRUE)
 
@@ -107,7 +112,7 @@ age <- pat_icu %>%
 The average age of patients at the time of admission was `r round(mean(age$ADMISSION_AGE), 2)` - for men the average was `r round(mean(age$ADMISSION_AGE[age$GENDER == 'M']), 2)` and for women the average was `r round(mean(age$ADMISSION_AGE[age$GENDER == 'F']), 2)`.
 
 Note:  Patients who are older than 89 years old at any time in the database have had their date of birth
-shifted to obscure their age and comply with HIPAA.  These ages appear in the data as >= 300.  They do, however, show up in the correct `>= 90` decade bucket in the charts following.
+shifted to obscure their age and comply with HIPAA.  These ages appear in the data as >= 300.  They do, however, show up in the correct `>= 90` decade bucket in the charts below.
 
 ```{r pat_age_plot, include=TRUE, out.width = "100%"}
 age_all <- pat_icu %>%
@@ -115,25 +120,29 @@ age_all <- pat_icu %>%
     select(SUBJECT_ID, HADM_ID, GENDER, ADMISSION_DECADE) %>% 
     ggplot(aes(x = ADMISSION_DECADE)) +
     geom_bar(
-        fill = "#FF9999",
+        fill = "light blue",
         color = "white",
         na.rm = TRUE) +
     labs(
         x = "Age Group", 
-        y = NULL)
+        y = NULL) +
+    scale_y_continuous(limits = c(0, 12000), breaks = seq(0, 12000, by = 3000)) +
+    theme_minimal()
 
 age_m <- pat_icu %>%
     filter(FIRST_ICUSTAY, GENDER == 'M') %>% 
     select(SUBJECT_ID, HADM_ID, GENDER, ADMISSION_DECADE) %>% 
     ggplot(aes(x = ADMISSION_DECADE)) +
     geom_bar(
-        fill = "#FF9999",
+        fill = "light blue",
         color = "white",
         na.rm = TRUE) +
     labs(
         title = "Men",
         x = "Age Group", 
         y = NULL) +
+    scale_y_continuous(limits = c(0, 7000), breaks = seq(0, 7000, by = 1000)) +
+    theme_minimal() +
     theme(axis.text = element_text(size = 7))
 
 age_f <- pat_icu %>%
@@ -141,13 +150,15 @@ age_f <- pat_icu %>%
     select(SUBJECT_ID, HADM_ID, GENDER, ADMISSION_DECADE) %>% 
     ggplot(aes(x = ADMISSION_DECADE)) +
     geom_bar(
-        fill = "#FF9999",
+        fill = "light blue",
         color = "white",
         na.rm = TRUE) +
     labs(
         title = "Women",
         x = "Age Group", 
         y = NULL) +
+    scale_y_continuous(limits = c(0, 7000), breaks = seq(0, 7000, by = 1000)) +
+    theme_minimal() +
     theme(axis.text = element_text(size = 7))
 
 age_all / ((age_m + age_f) + plot_layout(ncol = 2)) + 
@@ -158,37 +169,54 @@ age_all / ((age_m + age_f) + plot_layout(ncol = 2)) +
     )
 ```
 
-### Admission Characteristics
+### Ethnicity Group
 
-```{r adm_char_data, include=FALSE}
+```{r ethnicity_data, include=FALSE}
+ethnicity_n <- pat_icu %>% 
+    filter(FIRST_ICUSTAY) %>% 
+    group_by(ETHNICITY_GROUP) %>% 
+    count() %>% 
+    arrange(desc(n))
+```
+
+By ethnicity group, `r str_to_lower(as.character(ethnicity_n$ETHNICITY_GROUP)[1])` admissions accounted for the largest number (`r format(as.numeric(ethnicity_n[1,2]), big.mark=",")`) and highest percentage (`r round(100*(as.numeric(ethnicity_n[1,2]/sum(ethnicity_n[,2]))), 1)`%) of admissions.
+
+```{r ethnicity_plot, include=TRUE}
+pat_icu %>% 
+    filter(FIRST_ICUSTAY) %>% # limit to one row of admission data which are repeated for multiple icu stays
+    ggplot(aes(x = ETHNICITY_GROUP)) +
+    geom_bar(
+        fill = "light blue",
+        color = "white",
+        na.rm = TRUE) +
+    labs(
+        title = "Admission to Hospital by Ethnicity Group",
+        caption = "Source: MIMIIC-III v1.4",
+        y = NULL,
+        x = "Ethnicity Group") +
+    theme_minimal() +
+    scale_y_continuous(limits = c(0, 40000), breaks = seq(0, 40000, by = 10000)) +
+    scale_x_discrete(limits = as.character(ethnicity_n$ETHNICITY_GROUP))
+```
+
+### Admission Reason
+
+```{r adm_type_data, include=FALSE}
 adm_type_n <- pat_icu %>% 
     filter(FIRST_ICUSTAY) %>% 
     group_by(ADMISSION_TYPE) %>% 
     count() %>% 
     arrange(desc(n))
-
-adm_loc_n <- pat_icu %>% 
-    filter(FIRST_ICUSTAY) %>% 
-    group_by(ADMISSION_LOCATION) %>% 
-    count() %>% 
-    arrange(desc(n))
-
-dis_loc_n <- pat_icu %>% 
-    filter(FIRST_ICUSTAY) %>% 
-    group_by(DISCHARGE_LOCATION) %>% 
-    count() %>% 
-    arrange(desc(n))
 ```
 
-`r str_to_title(as.character(adm_type_n$ADMISSION_TYPE)[1])` admissions accounted for the largest number (`r format(as.numeric(adm_type_n[1,2]), big.mark=",")`) and highest percentage (`r round(100*(as.numeric(adm_type_n[1,2]/sum(adm_type_n[,2]))), 1)`) of admissions.
+`r str_to_title(as.character(adm_type_n$ADMISSION_TYPE)[1])` admissions accounted for the largest number (`r format(as.numeric(adm_type_n[1,2]), big.mark=",")`) and highest percentage (`r round(100*(as.numeric(adm_type_n[1,2]/sum(adm_type_n[,2]))), 1)`%) of admissions.
 
-
-```{r adm_char_plot, include=TRUE}
+```{r adm_type_plot, include=TRUE}
 pat_icu %>% 
-    filter(FIRST_ICUSTAY) %>% 
+    filter(FIRST_ICUSTAY) %>% # limit to one row of admission data which are repeated for multiple icu stays
     ggplot(aes(x = ADMISSION_TYPE)) +
     geom_bar(
-        fill = "#FF9999",
+        fill = "light blue",
         color = "white",
         na.rm = TRUE) +
     labs(
@@ -196,37 +224,114 @@ pat_icu %>%
         caption = "Source: MIMIIC-III v1.4",
         y = NULL,
         x = "Type of Admission") +
-    scale_x_discrete(limits=rev)
-
-pat_icu %>% 
-    filter(FIRST_ICUSTAY) %>% 
-    ggplot(aes(x = ADMISSION_LOCATION)) +
-    geom_bar(
-        fill = "#FF9999",
-        color = "white",
-        na.rm = TRUE) +
-    labs(
-        title = "Reason for Admission to Hospital",
-        caption = "Source: MIMIIC-III v1.4",
-        y = NULL,
-        x = "Type of Admission") +
-    scale_x_discrete(limits=rev)
-
-pat_icu %>% 
-    filter(FIRST_ICUSTAY) %>% 
-    ggplot(aes(x = DISCHARGE_LOCATION)) +
-    geom_bar(
-        fill = "#FF9999",
-        color = "white",
-        na.rm = TRUE) +
-    labs(
-        title = "Reason for Admission to Hospital",
-        caption = "Source: MIMIIC-III v1.4",
-        y = NULL,
-        x = "Type of Admission") +
-    scale_x_discrete(limits=rev)
+    theme_minimal() +
+    scale_y_continuous(limits = c(0, 45000), breaks = seq(0, 45000, by = 15000)) +
+    scale_x_discrete(limits = as.character(adm_type_n$ADMISSION_TYPE))
 ```
 
+### Insurance Coverage
+
+```{r insurance_data, include=FALSE}
+insurance_n <- pat_icu %>% 
+    filter(FIRST_ICUSTAY) %>% 
+    group_by(INSURANCE) %>% 
+    count() %>% 
+    arrange(desc(n))
+```
+
+`r str_to_title(as.character(insurance_n$INSURANCE)[1])` was the most prominent insurance coverage for hospital admissions (`r format(as.numeric(insurance_n[1,2]), big.mark=",")`) and highest percentage (`r round(100*(as.numeric(insurance_n[1,2]/sum(insurance_n[,2]))), 1)`%).
+
+```{r insurance_plot, include=TRUE}
+pat_icu %>% 
+    filter(FIRST_ICUSTAY) %>% # limit to one row of admission data which are repeated for multiple icu stays
+    ggplot(aes(x = INSURANCE)) +
+    geom_bar(
+        fill = "light blue",
+        color = "white",
+        na.rm = TRUE) +
+    labs(
+        title = "Insurance Coverage for Admissions to Hospital",
+        caption = "Source: MIMIIC-III v1.4",
+        y = NULL,
+        x = "Type of Insurance") +
+    theme_minimal() +
+    scale_y_continuous(limits = c(0, 30000), breaks = seq(0, 30000, by = 10000)) +
+    scale_x_discrete(limits = as.character(insurance_n$INSURANCE))
+```
+
+## Admission Activities {.tabset .tabset-fade .tabset-pills}
+
+### Services
+
+```{r service_data, include=FALSE}
+pat_scvs <- mimic_get_services(mimic3, pat_icu_cohort) %>% 
+    left_join(mimic3_service_descritions, by = c("CURR_SERVICE" = "SERVICE")) %>% 
+    mutate(SERVICE = as.factor(SHORT_DESCRIPTION)) %>% 
+    select(SUBJECT_ID, HADM_ID, TRANSFERTIME, CURR_SERVICE, SERVICE_SEQ, FIRST_SERVICE, SERVICE)
+
+n_serices <- pat_scvs %>% 
+    group_by(SUBJECT_ID, HADM_ID) %>% 
+    count()
+
+services_n <- pat_scvs %>% 
+    group_by(SERVICE) %>% 
+    count() %>% 
+    arrange(desc(n)) %>% 
+    left_join(mimic3_service_descritions, by = c("SERVICE" = "SHORT_DESCRIPTION")) %>% 
+    mutate(DESCRIPTION = str_split(DESCRIPTION, " - ", simplify = TRUE)[, 2]) %>% 
+    select(SERVICE, n, DESCRIPTION)
+
+first_services_n <- pat_scvs %>% 
+    filter(FIRST_SERVICE) %>%
+    group_by(SERVICE) %>% 
+    count() %>% 
+    arrange(desc(n)) %>% 
+    left_join(mimic3_service_descritions, by = c("SERVICE" = "SHORT_DESCRIPTION")) %>% 
+    mutate(DESCRIPTION = str_split(DESCRIPTION, " - ", simplify = TRUE)[, 2]) %>% 
+    select(SERVICE, n, DESCRIPTION)
+```
+
+Here we look at the type of service patients received during hospital admissions.
+
+Individual patients received between `r min(n_serices$n)` and `r max(n_serices$n)` services per admission
+with the average number of services per admission being `r round(mean(n_serices$n), 1)`.
+
+`r str_to_title(as.character(services_n$SERVICE)[1])` (`r as.character(services_n$DESCRIPTION)[1]`) was the
+most common service provided during admissions (`r format(as.numeric(services_n[1,2]), big.mark=",")`) accounting for `r round(100*(as.numeric(services_n[1,2]/sum(services_n[,2]))), 1)`% of all services.
+
+```{r service_plot, include=TRUE}
+pat_scvs %>% 
+    ggplot(aes(y = SERVICE)) +
+    geom_bar(
+        fill = "light blue",
+        color = "white",
+        na.rm = TRUE) +
+    labs(
+        title = "Services Administered during Admissions to Hospital",
+        caption = "Source: MIMIIC-III v1.4",
+        y = "Type of Service",
+        x = NULL) +
+    theme_minimal() +
+    scale_x_continuous(limits = c(0, 25000), breaks = seq(0, 25000, by = 5000)) +
+    scale_y_discrete(limits = rev(as.character(services_n$SERVICE)))
+
+pat_scvs %>% 
+    filter(FIRST_SERVICE) %>%
+    ggplot(aes(y = SERVICE)) +
+    geom_bar(
+        fill = "light blue",
+        color = "white",
+        na.rm = TRUE) +
+    labs(
+        title = "Initial Services Provided at Admissions to Hospital",
+        subtitle = "Probable Reason for Admission",
+        caption = "Source: MIMIIC-III v1.4",
+        y = "Type of Service",
+        x = NULL) +
+    theme_minimal() +
+    scale_x_continuous(limits = c(0, 25000), breaks = seq(0, 25000, by = 5000)) +
+    scale_y_discrete(limits = rev(as.character(first_services_n$SERVICE)))
+```
 
 
 ```{r end, include=FALSE}

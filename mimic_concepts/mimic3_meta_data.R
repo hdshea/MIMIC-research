@@ -54,6 +54,35 @@ mimic3_meta_data <-
         "TRANFERS",                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   "This table keeps track of the patient's physical location throughout their hospital stay.",           NA,                     "SUBJECT_ID, HADM_ID, ICUSTAY_ID"
     )
 
+mimic3_service_descritions <-
+tibble::tribble(
+    ~SERVICE,                                                                                ~DESCRIPTION,
+      "CMED",                             "Cardiac Medical - for non-surgical cardiac related admissions",
+     "CSURG",                                         "Cardiac Surgery - for surgical cardiac admissions",
+      "DENT",                                                "Dental - for dental/jaw related admissions",
+       "ENT",                        "Ear, nose, and throat - conditions primarily affecting these areas",
+        "GU",                                        "Genitourinary - reproductive organs/urinary system",
+       "GYN",                                   "Gynecological - female reproductive systems and breasts",
+       "MED",                                           "Medical - general service for internal medicine",
+        "NB",                                                    "Newborn - infants born at the hospital",
+       "NBB",                                               "Newborn baby - infants born at the hospital",
+      "NMED",                                  "Neurologic Medical - non-surgical, relating to the brain",
+     "NSURG",                                     "Neurologic Surgical - surgical, relating to the brain",
+       "OBS",                  "Obstetrics - conerned with childbirth and the care of women giving birth",
+     "ORTHO",                            "Orthopaedic - surgical, relating to the musculoskeletal system",
+      "OMED",                   "Orthopaedic medicine - non-surgical, relating to musculoskeletal system",
+     "PSURG", "Plastic - restortation/reconstruction of the human body (including cosmetic or aesthetic)",
+     "PSYCH",     "Psychiatric - mental disorders relating to mood, behaviour, cognition, or perceptions",
+      "SURG",                              "Surgical - general surgical service not classified elsewhere",
+     "TRAUM",                 "Trauma - injury or damage caused by physical harm from an external source",
+     "TSURG",       "Thoracic Surgical - surgery on the thorax, located between the neck and the abdomen",
+     "VSURG",                            "Vascular Surgical - surgery relating to the circulatory system"
+    )
+mimic3_service_descritions <- mimic3_service_descritions %>%
+    mutate(
+        SHORT_DESCRIPTION = str_split(DESCRIPTION, " - ", simplify = TRUE)[,1]
+    )
+
 # used to replicate the mimic-iii demo set for exercises using those data
 mimic_demo_cohort <- c(
     10006, 10011, 10013, 10017, 10019, 10026, 10027, 10029, 10032, 10033,
